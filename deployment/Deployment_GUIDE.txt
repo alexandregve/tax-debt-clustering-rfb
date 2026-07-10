@@ -1,0 +1,282 @@
+===============================================================================
+DEPLOYMENT GUIDE — Collections Segmentation Cockpit
+K-Means k=4 |  Master's Dissertation in BI - Nova IMS
+===============================================================================
+
+IMPORTANT NOTE ON DATA
+-------------------------------------------------------------------------------
+This guide describes the deployment pipeline as it was executed during the
+development of the model. Two files referenced in the steps below are NOT
+included in this repository, as they are subject to Brazilian tax secrecy
+law (sigilo fiscal, Article 198 of the National Tax Code):
+
+  - ck05.parquet
+      Intermediate checkpoint of the data-processing pipeline.
+  - devedores_classificados_YYYYMMDD.csv
+      Final dataset with one record per debtor (377,419 rows),
+      used as the data source for the Power BI dashboard.
+
+This guide is published for methodological transparency, so that the
+reader can understand the logic and sequence of the deployment pipeline.
+End-to-end execution requires access to the RFB's institutional
+environment.
+-------------------------------------------------------------------------------
+
+
+PREREQUISITES
+-------------------------------------------------------------------------------
+  - Python 3.8 or higher (Anaconda recommended)
+  - Jupyter Notebook or JupyterLab
+  - Checkpoint file ck05.parquet (not distributed - see note above)
+  - Power BI Desktop, for the Cockpit
+  - Packages: scikit-learn, pandas, numpy, pickle
+  - Access to the notebook's output folder
+
+
+===============================================================================
+PHASE 1 — ENVIRONMENT
+===============================================================================
+
+STEP 01 | Setup — Install dependencies
+-------------------------------------------------------------------------------
+Run the command below in a terminal (Anaconda Prompt or system terminal).
+If you already have the clustering notebook's environment configured, this
+step can be skipped.
+
+    Terminal / Anaconda Prompt:
+    pip install scikit-learn pandas numpy joblib
+
+Note: if using Conda, the equivalent command is:
+    conda install scikit-learn pandas numpy
+The versions used during training were scikit-learn 1.3+ and pandas 2.0+.
+
+
+STEP 02 | Setup — Open the deployment notebook
+-------------------------------------------------------------------------------
+Deployment is executed in the same Jupyter environment where clustering
+was performed. Open the notebook and make sure the kernel is active.
+
+    Terminal:
+    jupyter notebook Tax_segmentation_v03.ipynb
+
+IMPORTANT: Do not restart the kernel before running the deployment. The
+variables km4, labels_k4, df_orig_k4, and df_pos_outlier must be in
+memory.
+
+
+STEP 03 | Verification — Check variables in memory
+-------------------------------------------------------------------------------
+Before running the pipeline, confirm that all required variables are
+available. Run the diagnostic cell below.
+
+    Python — diagnostic cell:
+
+    # Quick diagnostic - run before deployment
+    required_vars = {
+        'km4'                  : 'trained K-Means model',
+        'labels_k4'            : 'cluster labels (377419 obs.)',
+        'df_orig_k4'           : 'dataset with original variables',
+        'df_pos_outlier'       : 'dataset post outlier treatment',
+        'var_clustering_final' : 'list of the model\'s 22 variables',
+        'cluster_names'        : 'dict of full names',
+        'cluster_short'        : 'dict of acronyms AHCD/SLED/LDD/FSAD',
+        'cluster_colors'       : 'dict of hex colors',
+    }
+    for var, desc in required_vars.items():
+        status = '✔' if var in dir() else '✗  MISSING'
+        print(f"  {status}  {var:<25} {desc}")
+
+    Expected output:
+      ✔  km4                       trained K-Means model
+      ✔  labels_k4                 cluster labels (377419 obs.)
+      ✔  df_orig_k4                dataset with original variables
+      ✔  df_pos_outlier            dataset post outlier treatment
+      ✔  var_clustering_final      list of the model's 22 variables
+      ✔  cluster_names             dict of full names
+      ✔  cluster_short             dict of acronyms AHCD/SLED/LDD/FSAD
+      ✔  cluster_colors            dict of hex colors
+
+IMPORTANT: If any variable appears as MISSING, run all notebook cells
+from the beginning (Kernel > Restart & Run All) before proceeding. The
+checkpoint ck05.parquet must be available in the project folder (see the
+data note at the top of this document).
+
+
+===============================================================================
+PHASE 2 — PIPELINE EXECUTION
+===============================================================================
+
+STEP 04 | Run — Block 0: Categorical Variables
+-------------------------------------------------------------------------------
+This block checks whether the 9 categorical variables are already present
+in df_orig_k4. If they are, no further action is needed.
+
+  - Confirm: 9 categoricals present, 0% nulls
+  - Variables: enterprise size, tax regime, CNAE sector, state (UF),
+    special taxpayer status
+
+
+STEP 05 | Run — Block 1: Artefact Serialization
+-------------------------------------------------------------------------------
+The most critical block in the pipeline. It refits the RobustScaler on
+the 19 continuous variables, serializes the model, and exports the
+centroids on the original scale.
+
+  - RobustScaler refitted on 19 continuous variables (not the 25 used
+    during training)
+  - 3 is_missing_* flags passed through without scaling
+  - Centroids verified: shape (4, 22)
+  - Files generated in deployment/model/
+
+    Expected output (excerpt):
+      ✔  RobustScaler refitted: 19 continuous variables
+      ✔  Centroids verified   : (4, 22)
+      Inertia    : 4,965,874.49
+      Silhouette : 0.2558
+
+WARNING: If an AssertionError occurs in the scaler, check that
+var_clustering_final contains exactly 22 variables (19 continuous + 3
+flags). The correct list is documented in the notebook, in the feature
+space configuration cell.
+
+
+STEP 06 | Run — Blocks 2 and 3: Classification and Validation
+-------------------------------------------------------------------------------
+Block 2 defines the nearest-centroid classification function. Block 3
+applies it to the training portfolio and checks agreement with the
+original labels.
+
+    Expected output — Block 3:
+      Agreement with original labels: 99.99%
+      ✔  Validation passed
+
+      Reclassified distribution vs. reference:
+        C0 AHCD    :  78,149  (ref:  78,143  Δ =    +6)
+        C1 SLED    : 213,472  (ref: 213,444  Δ =   +28)
+        C2 LDD     :  42,027  (ref:  42,054  Δ =   -27)
+        C3 FSAD    :  43,771  (ref:  43,778  Δ =    -7)
+
+Note: Discrepancies of ±28 observations are expected and attributable to
+floating-point numerical precision differences. Any discrepancy above
+100 observations should be investigated.
+
+
+STEP 07 | Run — Blocks 4 and 5: Dataset and Supporting Tables
+-------------------------------------------------------------------------------
+Builds the main dataset for Power BI (377,419 rows x 43 columns) and the
+centroid profile and cluster strategy support tables.
+
+  - Dataset exported: 377,419 obs. / 43 columns
+    (NOT distributed in this repository - see the data note at the top)
+  - Thematic blocks: identity, registration, debt, payment, compliance,
+    distance, flags
+  - Missing-value flags validated: none with zero sum
+
+WARNING: If a ValueError: all flags have zero sum occurs, the df_orig
+parameter referenced in Block 4.1b is not the pre-imputation dataframe.
+Check which variable holds the data with NaNs still intact.
+
+
+STEP 08 | Run — Block 6: Drift Monitor
+-------------------------------------------------------------------------------
+Serializes the monitoring configuration with the alert thresholds derived
+from the training portfolio. This file is the reference for future model
+assessments.
+
+  - Reference inertia: 4,965,874.49 / alert at +15%: 5,710,755.67
+  - Reference silhouette: 0.2558 / alert below: 0.20
+  - Distribution alert: ±5 p.p. per cluster
+  - Recommended retraining: every 6 months
+
+
+===============================================================================
+PHASE 3 — ARTEFACT VERIFICATION
+===============================================================================
+
+STEP 09 | Verification — Output folder structure
+-------------------------------------------------------------------------------
+After the pipeline has run completely in the institutional environment,
+the deployment/ folder should contain the following structure:
+
+deployment/
+├── model/
+│   ├── artefacto_vYYYYMMDD.pkl          <- full artefact
+│   ├── kmeans_k4.pkl                     <- standalone K-Means model
+│   ├── scaler.pkl                        <- RobustScaler (19 vars)
+│   ├── feature_names.json                <- list of the 22 variables
+│   ├── cluster_metadata.json             <- names and acronyms
+│   └── centroides_escala_original.csv    <- interpretable profile
+│
+├── data/
+│   ├── devedores_classificados_YYYYMMDD.csv   <- NOT distributed (tax secrecy)
+│   ├── centroides_perfil_YYYYMMDD.csv
+│   └── estrategias_cluster_YYYYMMDD.csv
+│
+├── monitor/
+│   └── monitor_config_YYYYMMDD.json      <- drift thresholds
+│
+└── classify_debtors.py                    <- standalone CLI script
+
+Note on this repository: only the aggregate artefacts (model, scaler,
+metadata, centroids, strategy tables, and monitor configuration) are
+publicly distributed. The devedores_classificados dataset does not
+accompany this repository, for the reasons explained in the note at the
+top of this document.
+
+Security note: .pkl files are binary Python serializations. As a general
+practice, never unpickle .pkl files obtained from untrusted sources -
+regardless of this project's specific content.
+
+
+===============================================================================
+PHASE 4 — POWER BI
+===============================================================================
+
+STEP 10 | Power BI — Import the dataset
+-------------------------------------------------------------------------------
+Open Power BI Desktop and import the main CSV file as the Cockpit's
+primary data source.
+
+  - Get Data > Text/CSV > select devedores_classificados_YYYYMMDD.csv
+  - Encoding: UTF-8 / Delimiter: comma
+  - Verify: 377,419 rows / 43 columns loaded
+  - Also import: estrategias_cluster_YYYYMMDD.csv and
+    centroides_perfil_YYYYMMDD.csv
+
+Note: The CSV file uses utf-8-sig (BOM), which ensures compatibility with
+special characters in Power BI on Windows environments. Do not change the
+encoding.
+
+
+STEP 11 | CLI — Classify new debtors (future use)
+-------------------------------------------------------------------------------
+To classify a new portfolio without needing to re-run the notebook, use
+the standalone script classify_debtors.py. The input file must contain
+the model's 22 variables.
+
+    Terminal — CLI script usage:
+    python classify_debtors.py \
+      --input  new_debtors.csv \
+      --output classified_result.csv \
+      --model  deployment/model/artefacto_vYYYYMMDD.pkl
+
+    Expected output:
+    Model   : kmeans_k4_20260316
+    Trained : 20260316
+    Output  : classified_result.csv  (N records)
+      C0 AHCD: X (xx.x%)
+      C1 SLED: X (xx.x%)
+      C2 LDD : X (xx.x%)
+      C3 FSAD: X (xx.x%)
+
+
+===============================================================================
+QUICK REFERENCE — EXPECTED VALIDATION METRICS
+===============================================================================
+  Pipeline agreement        : 99.99% (>= 377,380 correct obs.)
+  Silhouette score          : 0.2558 / alert below 0.20
+  Reference inertia         : 4,965,874.49 / alert at +15%
+  Retraining interval       : 6 months (recommended)
+  Final dataset             : 377,419 rows x 43 columns
+  Artefacts generated       : 9 files across 3 folders + 1 script
+===============================================================================
